@@ -23,4 +23,4 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 COPY . .
 
-CMD ["echo", "Ready for cron jobs"]
+CMD ["python", "scheduler.py"]
