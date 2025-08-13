@@ -32,16 +32,39 @@ VIDEOS_TO_FETCH = 20
 SAVE_FOLDER = "memes"
 HISTORY_FILE = "downloaded.json"
 
-# Create folders
-os.makedirs(f"{SAVE_FOLDER}/images", exist_ok=True)
-os.makedirs(f"{SAVE_FOLDER}/videos", exist_ok=True)
+# ENHANCED DEBUG INFO - Add this right after config
+print("="*50)
+print("🔍 ENHANCED DEBUG INFORMATION")
+print("="*50)
+print(f"Current working directory: {os.getcwd()}")
+print(f"Files in current directory: {os.listdir('.')}")
+print(f"SAVE_FOLDER path: {os.path.abspath(SAVE_FOLDER)}")
+print(f"Memes directory exists: {os.path.exists('memes')}")
+print(f"Memes/images directory exists: {os.path.exists('memes/images')}")
+print(f"Memes/videos directory exists: {os.path.exists('memes/videos')}")
 
-def fetch_memes():
-    # Debug info
-    print(f"FETCH DEBUG - Current working directory: {os.getcwd()}")
-    print(f"FETCH DEBUG - Memes directory exists: {os.path.exists('memes')}")
+# Create folders with enhanced logging
+try:
+    print(f"Creating directory: {SAVE_FOLDER}/images")
+    os.makedirs(f"{SAVE_FOLDER}/images", exist_ok=True)
+    print(f"✅ Created: {os.path.abspath(SAVE_FOLDER)}/images")
     
-    # ... your existing meme fetching code
+    print(f"Creating directory: {SAVE_FOLDER}/videos")
+    os.makedirs(f"{SAVE_FOLDER}/videos", exist_ok=True)
+    print(f"✅ Created: {os.path.abspath(SAVE_FOLDER)}/videos")
+    
+    # Test write permissions
+    test_file = os.path.join(SAVE_FOLDER, "test_write.txt")
+    with open(test_file, 'w') as f:
+        f.write("test write permissions")
+    print(f"✅ Write test successful: {test_file}")
+    os.remove(test_file)
+    print(f"✅ File cleanup successful")
+    
+except Exception as e:
+    print(f"❌ Directory/write error: {e}")
+
+print("="*50)
 
 def diagnose_environment():
     """Diagnose environment setup and potential issues"""
@@ -67,12 +90,24 @@ def diagnose_environment():
         logger.error(f"❌ Missing required environment variables: {', '.join(missing_vars)}")
         return False
     
-    # Check folder permissions
+    # Check folder permissions with enhanced logging
     try:
         test_file = os.path.join(SAVE_FOLDER, "test.txt")
+        logger.info(f"Testing write to: {os.path.abspath(test_file)}")
         with open(test_file, 'w') as f:
             f.write("test")
-        os.remove(test_file)
+        
+        # Check if file was actually created
+        if os.path.exists(test_file):
+            logger.info(f"✅ Test file created successfully: {test_file}")
+            file_size = os.path.getsize(test_file)
+            logger.info(f"✅ Test file size: {file_size} bytes")
+            os.remove(test_file)
+            logger.info("✅ Test file cleanup successful")
+        else:
+            logger.error("❌ Test file was not created!")
+            return False
+            
         logger.info("✅ Write permissions: OK")
     except Exception as e:
         logger.error(f"❌ Write permission error: {e}")
@@ -174,6 +209,8 @@ def get_file_extension(url):
 
 def download_file(url, filepath, retries=3):
     """Download file with retry mechanism and better error handling"""
+    logger.info(f"📥 Attempting to download to: {os.path.abspath(filepath)}")
+    
     for attempt in range(retries):
         try:
             headers = {
@@ -189,11 +226,19 @@ def download_file(url, filepath, retries=3):
             if not any(x in content_type for x in ['image', 'video', 'octet-stream']):
                 logger.warning(f"⚠️  Unexpected content type: {content_type}")
             
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(filepath), exist_ok=True)
+            
             with open(filepath, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     if chunk:
                         f.write(chunk)
             
+            # Verify file was created and has content
+            if not os.path.exists(filepath):
+                logger.error(f"❌ File was not created: {filepath}")
+                return False
+                
             file_size = os.path.getsize(filepath)
             if file_size < 1024:  # Less than 1KB might be an error page
                 logger.warning(f"⚠️  Small file size: {file_size} bytes")
@@ -201,6 +246,16 @@ def download_file(url, filepath, retries=3):
                 return False
             
             logger.info(f"✅ Downloaded: {os.path.basename(filepath)} ({file_size} bytes)")
+            logger.info(f"✅ File location: {os.path.abspath(filepath)}")
+            
+            # Verify file still exists after a short delay (test persistence)
+            time.sleep(0.5)
+            if os.path.exists(filepath):
+                logger.info(f"✅ File persistence confirmed: {filepath}")
+            else:
+                logger.error(f"❌ File disappeared after creation: {filepath}")
+                return False
+            
             return True
             
         except Exception as e:
@@ -229,6 +284,13 @@ def fetch_memes():
     """Main function to fetch memes from Reddit"""
     start_time = time.time()
     logger.info(f"🚀 Starting enhanced meme fetch from r/{SUBREDDIT}...")
+    
+    # ENHANCED DEBUG - Check directory state before starting
+    logger.info("📂 PRE-FETCH DIRECTORY STATE:")
+    logger.info(f"   Working directory: {os.getcwd()}")
+    logger.info(f"   Memes dir exists: {os.path.exists('memes')}")
+    logger.info(f"   Images dir exists: {os.path.exists('memes/images')}")
+    logger.info(f"   Videos dir exists: {os.path.exists('memes/videos')}")
     
     # Run diagnostics
     if not diagnose_environment():
@@ -285,6 +347,13 @@ def fetch_memes():
                     image_count += 1
                     downloaded_ids.add(submission.id)
                     logger.info(f"📸 Image {image_count}/{IMAGES_TO_FETCH} downloaded")
+                    
+                    # ENHANCED DEBUG - Check if file persists
+                    if os.path.exists(filepath):
+                        size = os.path.getsize(filepath)
+                        logger.info(f"✅ File confirmed: {filepath} ({size} bytes)")
+                    else:
+                        logger.error(f"❌ File vanished: {filepath}")
                 else:
                     failed_urls.add(submission.url)
             
@@ -309,6 +378,13 @@ def fetch_memes():
                         video_count += 1
                         downloaded_ids.add(submission.id)
                         logger.info(f"🎥 Video {video_count}/{VIDEOS_TO_FETCH} downloaded")
+                        
+                        # ENHANCED DEBUG - Check if file persists
+                        if os.path.exists(filepath):
+                            size = os.path.getsize(filepath)
+                            logger.info(f"✅ File confirmed: {filepath} ({size} bytes)")
+                        else:
+                            logger.error(f"❌ File vanished: {filepath}")
                     else:
                         failed_urls.add(submission.url)
             
@@ -324,6 +400,35 @@ def fetch_memes():
     
     except Exception as e:
         logger.error(f"❌ Error fetching posts: {e}")
+    
+    # ENHANCED DEBUG - Final directory check
+    logger.info("📂 POST-FETCH DIRECTORY STATE:")
+    try:
+        images_dir = os.path.join(SAVE_FOLDER, "images")
+        videos_dir = os.path.join(SAVE_FOLDER, "videos")
+        
+        if os.path.exists(images_dir):
+            image_files = os.listdir(images_dir)
+            logger.info(f"   Images directory: {len(image_files)} files")
+            for f in image_files[:5]:  # Show first 5
+                filepath = os.path.join(images_dir, f)
+                size = os.path.getsize(filepath)
+                logger.info(f"     - {f} ({size} bytes)")
+        else:
+            logger.error(f"   Images directory not found: {images_dir}")
+            
+        if os.path.exists(videos_dir):
+            video_files = os.listdir(videos_dir)
+            logger.info(f"   Videos directory: {len(video_files)} files")
+            for f in video_files[:5]:  # Show first 5
+                filepath = os.path.join(videos_dir, f)
+                size = os.path.getsize(filepath)
+                logger.info(f"     - {f} ({size} bytes)")
+        else:
+            logger.error(f"   Videos directory not found: {videos_dir}")
+            
+    except Exception as e:
+        logger.error(f"❌ Error checking final directory state: {e}")
     
     # Save updated history
     history["downloaded_ids"] = list(downloaded_ids)
