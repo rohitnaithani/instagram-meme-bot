@@ -34,16 +34,19 @@ RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | apt-key add
     && apt-get install -y google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
 
-# Install ChromeDriver (Fixed to match Chrome version)
-RUN CHROME_VERSION=$(google-chrome --version | grep -oP '\d+' | head -1) && \
-    wget -O /tmp/chromedriver.zip "https://chromedriver.storage.googleapis.com/114.0.5735.90/chromedriver_linux64.zip" && \
+# Install compatible ChromeDriver
+RUN CHROME_VERSION=$(google-chrome --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1) && \
+    echo "Chrome version: $CHROME_VERSION" && \
+    CHROMEDRIVER_VERSION="114.0.5735.90" && \
+    wget -O /tmp/chromedriver.zip "https://chromedriver.storage.googleapis.com/${CHROMEDRIVER_VERSION}/chromedriver_linux64.zip" && \
     unzip /tmp/chromedriver.zip -d /usr/local/bin/ && \
     rm /tmp/chromedriver.zip && \
-    chmod +x /usr/local/bin/chromedriver
+    chmod +x /usr/local/bin/chromedriver && \
+    chromedriver --version
 
-# Set up Python
-RUN ln -s /usr/bin/python3 /usr/bin/python
-RUN ln -s /usr/bin/pip3 /usr/bin/pip
+# Set up Python aliases (safer approach)
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3 1 && \
+    update-alternatives --install /usr/bin/pip pip /usr/bin/pip3 1
 
 # Set working directory
 WORKDIR /app
@@ -55,5 +58,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Run the scheduler (FIXED: Use correct filename)
+# Create necessary directories
+RUN mkdir -p memes/images memes/videos
+
+# Run the scheduler
 CMD ["python", "scheduler_main.py"]
