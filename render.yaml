@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: instagram-meme-bot
+    env: docker
+    repo: https://github.com/yourusername/your-repo.git # Replace with your repo
+    region: oregon # or your preferred region
+    plan: starter # or your preferred plan
+    buildCommand: docker build -t instagram-meme-bot .
+    startCommand: /app/start.sh
+    healthCheckPath: /health
+    envVars:
+      - key: INSTAGRAM_USERNAME
+        sync: false
+      - key: INSTAGRAM_PASSWORD
+        sync: false  
+      - key: REDDIT_CLIENT_ID
+        sync: false
+      - key: REDDIT_CLIENT_SECRET
+        sync: false
+      - key: REDDIT_USERNAME
+        sync: false
+      - key: REDDIT_PASSWORD
+        sync: false
+      - key: PORT
+        value: 10000
