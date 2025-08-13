@@ -36,6 +36,13 @@ HISTORY_FILE = "downloaded.json"
 os.makedirs(f"{SAVE_FOLDER}/images", exist_ok=True)
 os.makedirs(f"{SAVE_FOLDER}/videos", exist_ok=True)
 
+def fetch_memes():
+    # Debug info
+    print(f"FETCH DEBUG - Current working directory: {os.getcwd()}")
+    print(f"FETCH DEBUG - Memes directory exists: {os.path.exists('memes')}")
+    
+    # ... your existing meme fetching code
+
 def diagnose_environment():
     """Diagnose environment setup and potential issues"""
     logger.info("🔍 Running diagnostic checks...")
