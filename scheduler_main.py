@@ -22,6 +22,21 @@ bot_status = {
     "recent_logs": []
 }
 
+def run_debug_check():
+    """Run comprehensive debug check"""
+    log_message("🔍 Running debug diagnostics...")
+    try:
+        result = subprocess.run([sys.executable, "cloud_instagram_uploader.py"], 
+                              capture_output=True, text=True, timeout=300)
+        
+        # Log all output for debugging
+        log_message("STDOUT:", result.stdout)
+        log_message("STDERR:", result.stderr)
+        log_message(f"Return code: {result.returncode}")
+        
+    except Exception as e:
+        log_message(f"❌ Debug check failed: {e}")
+
 def log_message(message):
     """Log message with timestamp"""
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
