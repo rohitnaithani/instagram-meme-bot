@@ -4,6 +4,6 @@
     "builder": "DOCKERFILE"
   },
   "deploy": {
-    "startCommand": "echo 'Bot ready for cron jobs'"
+    "startCommand": "python scheduler_main.py"
   }
 }
