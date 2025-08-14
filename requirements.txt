@@ -1,7 +1,31 @@
 
+
+
+webdriver-manager==4.0.1
+psycopg2-binary==2.9.7
+
+# Core dependencies
 praw==7.7.1
 requests==2.31.0
 selenium==4.15.0
+
+# Web scraping and automation
+beautifulsoup4==4.12.2
+lxml==4.9.3
+
+# Scheduling and utilities
 schedule==1.2.0
-webdriver-manager==4.0.1
-psycopg2-binary==2.9.7
+python-dotenv==1.0.0
+
+# Image and video processing (optional)
+Pillow==10.1.0
+
+# Database (if using PostgreSQL)
+psycopg2-binary==2.9.9
+sqlalchemy==2.0.23
+
+# Logging and monitoring
+python-dateutil==2.8.2
+
+# Cloud deployment
+gunicorn==21.2.0
