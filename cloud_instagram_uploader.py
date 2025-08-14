@@ -334,7 +334,7 @@ def instagram_login(driver, username, password):
             try:
                 WebDriverWait(driver, 10).until(
                     EC.any_of(
-                        EC.presence_of_element_located((By.XPATH, "//svg[@aria-label='Home']")),
+                        EC.presence_of_element_located((By.XPATH, "//a[contains(@href, '/explore/')]")),
                         EC.presence_of_element_located((By.XPATH, "//span[text()='Create']"))
                     )
                 )
