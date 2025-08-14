@@ -182,19 +182,10 @@ def human_delay(min_seconds=2, max_seconds=5):
     time.sleep(delay)
 
 def setup_driver():
-    """Setup Chrome driver using system ChromeDriver (no webdriver-manager)"""
-    logger.info("🔧 Setting up Chrome driver with system ChromeDriver...")
+    """Setup Chrome driver with flexible ChromeDriver location"""
+    logger.info("🔧 Setting up Chrome driver...")
     
-    # Check if ChromeDriver is available
-    try:
-        result = subprocess.run(['chromedriver', '--version'], capture_output=True, text=True)
-        logger.info(f"✅ System ChromeDriver found: {result.stdout.strip()}")
-    except FileNotFoundError:
-        logger.error("❌ ChromeDriver not found in PATH!")
-        logger.error("💡 Make sure ChromeDriver is installed and in PATH")
-        return None
-    
-    # Check Chrome
+    # Check Chrome first
     try:
         result = subprocess.run(['google-chrome', '--version'], capture_output=True, text=True)
         logger.info(f"✅ Chrome found: {result.stdout.strip()}")
@@ -244,38 +235,43 @@ def setup_driver():
     }
     chrome_options.add_experimental_option("prefs", prefs)
     
-    try:
-        # Use system ChromeDriver (already in PATH)
-        logger.info("🚀 Starting Chrome with system ChromeDriver...")
-        service = Service('/usr/local/bin/chromedriver')  # Explicit path from Dockerfile
-        driver = webdriver.Chrome(service=service, options=chrome_options)
-        
-        # Enhanced anti-detection scripts
-        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-        driver.execute_script("Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']})")
-        driver.execute_script("Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]})")
-        
-        driver.set_page_load_timeout(60)
-        driver.implicitly_wait(10)
-        
-        logger.info("✅ Chrome driver initialized successfully")
-        return driver
-        
-    except Exception as e:
-        logger.error(f"❌ Chrome driver setup failed: {e}")
-        logger.error("💡 Check Chrome and ChromeDriver installation")
-        
-        # Fallback: try without explicit service path
+    # Try different ChromeDriver locations
+    chromedriver_paths = [
+        '/usr/local/bin/chromedriver',  # Custom installation
+        '/usr/bin/chromedriver',        # System package
+        'chromedriver'                  # PATH lookup
+    ]
+    
+    driver = None
+    for path in chromedriver_paths:
         try:
-            logger.info("🔄 Trying fallback Chrome setup...")
-            driver = webdriver.Chrome(options=chrome_options)
-            driver.set_page_load_timeout(60)
-            logger.info("✅ Chrome driver initialized with fallback method")
-            return driver
-        except Exception as e2:
-            logger.error(f"❌ Fallback also failed: {e2}")
-            
+            logger.info(f"🚀 Trying ChromeDriver at: {path}")
+            if path == 'chromedriver':
+                # Let selenium find it in PATH
+                driver = webdriver.Chrome(options=chrome_options)
+            else:
+                service = Service(path)
+                driver = webdriver.Chrome(service=service, options=chrome_options)
+            logger.info(f"✅ ChromeDriver working: {path}")
+            break
+        except Exception as e:
+            logger.info(f"❌ Failed with {path}: {e}")
+            continue
+    
+    if not driver:
+        logger.error("❌ No working ChromeDriver found!")
         return None
+    
+    # Enhanced anti-detection scripts
+    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+    driver.execute_script("Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']})")
+    driver.execute_script("Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]})")
+    
+    driver.set_page_load_timeout(60)
+    driver.implicitly_wait(10)
+    
+    logger.info("✅ Chrome driver initialized successfully")
+    return driver
 
 def instagram_login(driver, username, password):
     """Instagram login with improved error handling"""
@@ -562,135 +558,4 @@ def upload_post(driver, file_path, caption):
         logger.error(f"❌ Upload error: {e}")
         return False
 
-def mark_meme_as_posted(meme_id):
-    """Mark meme as posted in database"""
-    logger.info(f"📝 Marking meme {meme_id} as posted...")
-    
-    conn = get_database_connection()
-    if not conn:
-        return False
-    
-    try:
-        cursor = conn.cursor()
-        
-        # Ensure columns exist
-        cursor.execute("""
-            ALTER TABLE memes 
-            ADD COLUMN IF NOT EXISTS uploaded_to_instagram BOOLEAN DEFAULT FALSE,
-            ADD COLUMN IF NOT EXISTS uploaded_at TIMESTAMP DEFAULT NULL;
-        """)
-        conn.commit()
-        
-        # Update meme
-        cursor.execute("""
-            UPDATE memes 
-            SET uploaded_to_instagram = TRUE, uploaded_at = %s 
-            WHERE id = %s
-        """, (datetime.now(), meme_id))
-        
-        conn.commit()
-        logger.info(f"✅ Marked meme {meme_id} as posted")
-        return True
-        
-    except Exception as e:
-        logger.error(f"❌ Error marking as posted: {e}")
-        return False
-    finally:
-        if conn:
-            conn.close()
-
-def main():
-    """Main function"""
-    logger.info("🚀 Starting Instagram uploader (Fixed Chrome)...")
-    logger.info("=" * 60)
-    
-    # Check credentials
-    if not all([INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD]):
-        logger.error("❌ Missing Instagram credentials!")
-        return False
-    
-    if not DATABASE_URL:
-        logger.error("❌ Missing DATABASE_URL!")
-        return False
-    
-    logger.info(f"✅ Credentials loaded for: {INSTAGRAM_USERNAME}")
-    
-    # Test database
-    test_conn = get_database_connection()
-    if not test_conn:
-        logger.error("❌ Database connection failed!")
-        return False
-    test_conn.close()
-    
-    # Load state
-    state = load_state()
-    posted_ids = state.get("posted_meme_ids", [])
-    logger.info(f"📊 Previously posted: {len(posted_ids)} memes")
-    
-    # Get memes
-    memes = get_memes_from_database(posted_ids)
-    if not memes:
-        logger.error("❌ No memes available!")
-        return False
-    
-    meme = memes[0]
-    logger.info(f"🎯 Selected: {meme['title'][:50]}...")
-    
-    # Download meme
-    temp_file = download_meme_file(meme['url'], meme['id'])
-    if not temp_file:
-        logger.error("❌ Download failed")
-        return False
-    
-    # Setup driver
-    driver = setup_driver()
-    if not driver:
-        logger.error("❌ Chrome setup failed")
-        return False
-    
-    success = False
-    try:
-        # Login
-        if not instagram_login(driver, INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD):
-            logger.error("❌ Login failed")
-            return False
-        
-        # Upload
-        caption = format_caption(meme)
-        if upload_post(driver, temp_file, caption):
-            # Mark as posted
-            mark_meme_as_posted(meme['id'])
-            posted_ids.append(meme['id'])
-            state["posted_meme_ids"] = posted_ids
-            state["last_upload_date"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            save_state(state)
-            
-            logger.info("🎉 SUCCESS!")
-            logger.info(f"   Meme: {meme['title']}")
-            success = True
-        else:
-            logger.error("❌ Upload failed")
-    
-    except Exception as e:
-        logger.error(f"❌ Error: {e}")
-    
-    finally:
-        # Cleanup
-        if temp_file and os.path.exists(temp_file):
-            os.unlink(temp_file)
-            logger.info("🧹 Temp file cleaned")
-        
-        if driver:
-            driver.quit()
-            logger.info("🔒 Driver closed")
-    
-    logger.info("=" * 60)
-    return success
-
-if __name__ == "__main__":
-    success = main()
-    if success:
-        print("✅ Instagram upload completed!")
-    else:
-        print("❌ Instagram upload failed")
-        exit(1)
+def mark_
