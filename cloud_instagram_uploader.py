@@ -2,15 +2,18 @@ import os
 import time
 import random
 import json
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
-import glob
 import logging
+from datetime import datetime
+import requests
+import tempfile
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -19,28 +22,50 @@ logger = logging.getLogger(__name__)
 # ====== CONFIG FROM ENVIRONMENT VARIABLES ======
 INSTAGRAM_USERNAME = os.getenv("INSTAGRAM_USERNAME")
 INSTAGRAM_PASSWORD = os.getenv("INSTAGRAM_PASSWORD")
-MEMES_FOLDER = "memes"
+
+# Database configuration
+DATABASE_URL = os.getenv("DATABASE_URL")  # Railway PostgreSQL URL
+DB_HOST = os.getenv("DB_HOST")
+DB_NAME = os.getenv("DB_NAME")
+DB_USER = os.getenv("DB_USER")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+DB_PORT = os.getenv("DB_PORT", "5432")
+
 POSTS_PER_RUN = 1
 STATE_FILE = "upload_state.json"
 
-# Enhanced captions for better engagement
-MEME_CAPTIONS = [
-    "This one hits different 💀",
-    "Tag someone who needs this 😂",
-    "POV: You can relate 🎯",
-    "When it's too accurate 😭", 
-    "Me trying to adult:",
-    "That friend who always...",
-    "Plot twist: Monday strikes again",
-    "Why is this so true though? 🤔",
-    "Not me laughing at this 🤣",
-    "This is sending me 🚀",
-    "The accuracy is scary 📍",
-    "When life hits you with reality:",
-]
+# Enhanced hashtags for better reach
+HASHTAGS = "#memes #funny #relatable #comedy #viral #trending #lol #dankmemes #funnymemes #memesdaily #humor #laughs #mood #same #facts #reddit"
 
-# Trending hashtags for better reach
-HASHTAGS = "#memes #funny #relatable #comedy #viral #trending #lol #dankmemes #funnymemes #memesdaily #humor #laughs #mood #same #facts"
+def get_database_connection():
+    """Get database connection using available credentials"""
+    try:
+        # Try DATABASE_URL first (Railway format)
+        if DATABASE_URL:
+            logger.info("🔌 Connecting to database using DATABASE_URL...")
+            conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        # Try individual parameters
+        elif all([DB_HOST, DB_NAME, DB_USER, DB_PASSWORD]):
+            logger.info("🔌 Connecting to database using individual parameters...")
+            conn = psycopg2.connect(
+                host=DB_HOST,
+                database=DB_NAME,
+                user=DB_USER,
+                password=DB_PASSWORD,
+                port=DB_PORT,
+                cursor_factory=RealDictCursor
+            )
+        else:
+            logger.error("❌ No database credentials found!")
+            logger.error("💡 Set DATABASE_URL or DB_HOST, DB_NAME, DB_USER, DB_PASSWORD")
+            return None
+        
+        logger.info("✅ Database connection successful")
+        return conn
+        
+    except Exception as e:
+        logger.error(f"❌ Database connection failed: {e}")
+        return None
 
 def load_state():
     """Load upload state to track posted memes"""
@@ -49,8 +74,8 @@ def load_state():
             with open(STATE_FILE, 'r') as f:
                 return json.load(f)
         except:
-            return {"posted_files": [], "last_upload_date": ""}
-    return {"posted_files": [], "last_upload_date": ""}
+            return {"posted_meme_ids": [], "last_upload_date": ""}
+    return {"posted_meme_ids": [], "last_upload_date": ""}
 
 def save_state(state):
     """Save upload state"""
@@ -60,10 +85,129 @@ def save_state(state):
     except Exception as e:
         logger.error(f"Error saving state: {e}")
 
-def get_random_caption():
-    """Get random caption with hashtags"""
-    caption = random.choice(MEME_CAPTIONS)
-    return f"{caption}\n\n{HASHTAGS}"
+def get_memes_from_database(posted_ids=None):
+    """Fetch unposted memes from PostgreSQL database"""
+    logger.info("📋 Fetching memes from database...")
+    
+    if posted_ids is None:
+        posted_ids = []
+    
+    conn = get_database_connection()
+    if not conn:
+        return []
+    
+    try:
+        cursor = conn.cursor()
+        
+        # Query to get unposted memes (matching your Railway schema)
+        if posted_ids:
+            placeholders = ','.join(['%s'] * len(posted_ids))
+            query = f"""
+            SELECT id, post_id as reddit_id, title, url, 
+                   CASE WHEN url LIKE '%.mp4%' OR url LIKE '%v.redd.it%' THEN 'video' ELSE 'image' END as file_type
+            FROM memes 
+            WHERE id NOT IN ({placeholders})
+            AND url IS NOT NULL
+            ORDER BY id DESC
+            LIMIT 20
+            """
+            cursor.execute(query, posted_ids)
+        else:
+            query = """
+            SELECT id, post_id as reddit_id, title, url,
+                   CASE WHEN url LIKE '%.mp4%' OR url LIKE '%v.redd.it%' THEN 'video' ELSE 'image' END as file_type
+            FROM memes 
+            WHERE url IS NOT NULL
+            ORDER BY id DESC
+            LIMIT 20
+            """
+            cursor.execute(query)
+        
+        memes = cursor.fetchall()
+        logger.info(f"📊 Found {len(memes)} unposted memes in database")
+        
+        # Convert to list of dicts for easier handling
+        meme_list = []
+        for meme in memes:
+            meme_dict = dict(meme)
+            logger.info(f"  - {meme_dict['title'][:50]}... (Score: {meme_dict.get('score', 'N/A')})")
+            meme_list.append(meme_dict)
+        
+        return meme_list
+        
+    except Exception as e:
+        logger.error(f"❌ Error fetching memes from database: {e}")
+        logger.error("💡 Check your database table structure and column names")
+        return []
+    
+    finally:
+        if conn:
+            conn.close()
+
+def download_meme_file(url, meme_id):
+    """Download meme file from URL to temporary location"""
+    try:
+        logger.info(f"📥 Downloading meme from: {url}")
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        response = requests.get(url, headers=headers, stream=True, timeout=30)
+        response.raise_for_status()
+        
+        # Determine file extension
+        content_type = response.headers.get('content-type', '')
+        if 'image/jpeg' in content_type or url.endswith('.jpg'):
+            ext = '.jpg'
+        elif 'image/png' in content_type or url.endswith('.png'):
+            ext = '.png'
+        elif 'image/gif' in content_type or url.endswith('.gif'):
+            ext = '.gif'
+        elif 'video/mp4' in content_type or url.endswith('.mp4'):
+            ext = '.mp4'
+        elif url.endswith('.jpeg'):
+            ext = '.jpg'
+        else:
+            ext = '.jpg'  # Default
+        
+        # Create temporary file
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=ext, prefix=f"meme_{meme_id}_")
+        
+        # Download file
+        for chunk in response.iter_content(chunk_size=8192):
+            if chunk:
+                temp_file.write(chunk)
+        
+        temp_file.close()
+        
+        # Check file size
+        file_size = os.path.getsize(temp_file.name)
+        if file_size < 1024:  # Less than 1KB
+            os.unlink(temp_file.name)
+            logger.error(f"❌ Downloaded file too small: {file_size} bytes")
+            return None
+        
+        logger.info(f"✅ Downloaded meme: {os.path.basename(temp_file.name)} ({file_size} bytes)")
+        return temp_file.name
+        
+    except Exception as e:
+        logger.error(f"❌ Error downloading meme: {e}")
+        return None
+    """Format caption from meme data"""
+    title = meme_data.get('title', 'Funny meme')
+    
+    # Clean up title (remove common Reddit formatting)
+    title = title.replace('[OC]', '').replace('[META]', '').strip()
+    
+    # Limit title length for Instagram
+    if len(title) > 120:
+        title = title[:117] + "..."
+    
+    # Create caption with title and hashtags
+    caption = f"{title}\n\n🔥 Fresh from Reddit\n\n{HASHTAGS}"
+    
+    return caption
 
 def human_delay(min_seconds=2, max_seconds=5):
     """Add human-like delay"""
@@ -97,12 +241,6 @@ def setup_driver():
     
     # Realistic browser fingerprint
     chrome_options.add_argument("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-    
-    # Additional preferences
-    chrome_options.add_experimental_option("prefs", {
-        "profile.default_content_setting_values.notifications": 2,
-        "profile.default_content_settings.popups": 0
-    })
     
     try:
         driver = webdriver.Chrome(options=chrome_options)
@@ -260,7 +398,7 @@ def upload_post(driver, file_path, caption):
         human_delay(5, 8)
         
         # Click Next button(s)
-        for step in range(3):  # Usually 2-3 next buttons
+        for step in range(3):
             try:
                 next_btn = WebDriverWait(driver, 10).until(
                     EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Next')]"))
@@ -324,34 +462,38 @@ def upload_post(driver, file_path, caption):
         logger.error(f"❌ Upload failed: {e}")
         return False
 
-def get_media_files():
-    """Get available media files"""
-    logger.info("📁 Scanning for media files...")
+def mark_meme_as_posted(meme_id):
+    """Mark meme as posted in database"""
+    conn = get_database_connection()
+    if not conn:
+        return False
     
-    image_files = []
-    video_files = []
+    try:
+        cursor = conn.cursor()
+        
+        # Update meme as posted
+        cursor.execute("""
+            UPDATE memes 
+            SET uploaded_to_instagram = true, 
+                uploaded_at = %s 
+            WHERE id = %s
+        """, (datetime.now(), meme_id))
+        
+        conn.commit()
+        logger.info(f"✅ Marked meme {meme_id} as posted in database")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Error marking meme as posted: {e}")
+        return False
     
-    # Get images
-    for ext in ["*.jpg", "*.jpeg", "*.png"]:
-        pattern = os.path.join(MEMES_FOLDER, "images", ext)
-        found = glob.glob(pattern)
-        image_files.extend(found)
-    
-    # Get videos
-    for ext in ["*.mp4", "*.mov"]:
-        pattern = os.path.join(MEMES_FOLDER, "videos", ext)
-        found = glob.glob(pattern)
-        video_files.extend(found)
-    
-    all_files = image_files + video_files
-    random.shuffle(all_files)
-    
-    logger.info(f"📊 Found {len(all_files)} total files ({len(image_files)} images, {len(video_files)} videos)")
-    return all_files
+    finally:
+        if conn:
+            conn.close()
 
 def main():
     """Main upload function"""
-    logger.info("🚀 Starting Instagram uploader...")
+    logger.info("🚀 Starting PostgreSQL-based Instagram uploader...")
     
     # Check credentials
     if not all([INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD]):
@@ -363,27 +505,28 @@ def main():
     
     # Load state
     state = load_state()
-    posted_files = set(state["posted_files"])
+    posted_meme_ids = state.get("posted_meme_ids", [])
     
-    # Get media files
-    media_files = get_media_files()
-    if not media_files:
-        logger.error("❌ No media files found!")
+    # Get memes from database
+    memes = get_memes_from_database(posted_meme_ids)
+    
+    if not memes:
+        logger.error("❌ No unposted memes found in database!")
+        logger.error("💡 Make sure the meme fetcher has run and stored memes in PostgreSQL")
         return False
     
-    # Filter available files
-    available_files = [f for f in media_files if f not in posted_files]
+    logger.info(f"📤 Found {len(memes)} memes available to post")
     
-    if not available_files:
-        logger.info("ℹ️  All files posted, resetting cycle...")
-        available_files = media_files
-        posted_files = set()
-        state["posted_files"] = []
+    # Select first meme to post
+    meme_to_post = memes[0]
+    logger.info(f"🎯 Selected meme: {meme_to_post['title'][:50]}...")
+    logger.info(f"   URL: {meme_to_post['url']}")
+    logger.info(f"   Reddit ID: {meme_to_post['reddit_id']}")
     
-    logger.info(f"📤 {len(available_files)} files available to post")
-    
-    if not available_files:
-        logger.error("❌ No files available")
+    # Download the meme file
+    temp_file_path = download_meme_file(meme_to_post['url'], meme_to_post['id'])
+    if not temp_file_path:
+        logger.error("❌ Failed to download meme file")
         return False
     
     # Setup driver
@@ -398,18 +541,22 @@ def main():
             logger.error("❌ Instagram login failed")
             return False
         
-        # Upload post
-        file_to_upload = available_files[0]
-        caption = get_random_caption()
+        # Format caption from meme data
+        caption = format_caption(meme_to_post)
+        logger.info(f"📝 Caption: {caption[:100]}...")
         
-        if upload_post(driver, file_to_upload, caption):
-            # Mark as posted
-            posted_files.add(file_to_upload)
-            state["posted_files"] = list(posted_files)
-            state["last_upload_date"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        # Upload post
+        if upload_post(driver, temp_file_path, caption):
+            # Mark as posted in database and local state
+            mark_meme_as_posted(meme_to_post['id'])
+            
+            posted_meme_ids.append(meme_to_post['id'])
+            state["posted_meme_ids"] = posted_meme_ids
+            state["last_upload_date"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             save_state(state)
             
-            logger.info(f"🎉 Successfully uploaded: {os.path.basename(file_to_upload)}")
+            logger.info(f"🎉 Successfully uploaded meme ID {meme_to_post['id']}")
+            logger.info(f"   Title: {meme_to_post['title']}")
             success = True
         else:
             logger.error("❌ Upload failed")
@@ -418,6 +565,14 @@ def main():
         logger.error(f"❌ Unexpected error: {e}")
     
     finally:
+        # Clean up temporary file
+        if 'temp_file_path' in locals() and temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.unlink(temp_file_path)
+                logger.info("🧹 Cleaned up temporary file")
+            except:
+                pass
+        
         try:
             driver.quit()
         except:
