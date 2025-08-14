@@ -2,6 +2,17 @@
 import threading
 from meme_graphql import app as graphql_app
 import uvicorn
+import schedule
+import time
+import subprocess
+import sys
+import os
+import threading
+import json
+import glob
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from datetime import datetime
+
 
 # Add this function after your existing functions
 def start_graphql_server():
@@ -23,3 +34,35 @@ def main():
     graphql_thread.start()
     
     # Rest of your existing code...
+
+# Global status variables
+bot_status = {
+"last_fetch": "Never",
+"last_upload": "Never", 
+"total_images": 0,
+"total_videos": 0,
+"posted_count": 0,
+"available_count": 0,
+"errors": [],
+"environment_check": {},
+"recent_logs": []
+}
+
+def run_debug_check():
+    """Run comprehensive debug check"""
+    log_message("🔍 Running debug diagnostics...")
+    try:
+        result = subprocess.run([sys.executable, "cloud_instagram_uploader.py"], 
+                              capture_output=True, text=True, timeout=300)
+        
+        # Log all output for debugging
+        log_message("STDOUT:", result.stdout)
+        log_message("STDERR:", result.stderr)
+        log_message(f"Return code: {result.returncode}")
+        
+    except Exception as e:
+        log_message(f"❌ Debug check failed: {e}")
+
+def log_message(message):
+"""Log message with timestamp"""
+timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
