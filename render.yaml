@@ -2,17 +2,20 @@ services:
   - type: web
     name: instagram-meme-bot
     env: docker
-    repo: https://github.com/yourusername/your-repo.git # Replace with your repo
+    repo: https://github.com/yourusername/your-repo.git # Replace with your actual repo URL
     region: oregon # or your preferred region
     plan: starter # or your preferred plan
     buildCommand: docker build -t instagram-meme-bot .
     startCommand: /app/start.sh
     healthCheckPath: /health
     envVars:
+      # Instagram credentials
       - key: INSTAGRAM_USERNAME
         sync: false
       - key: INSTAGRAM_PASSWORD
-        sync: false  
+        sync: false
+      
+      # Reddit API credentials  
       - key: REDDIT_CLIENT_ID
         sync: false
       - key: REDDIT_CLIENT_SECRET
@@ -21,5 +24,11 @@ services:
         sync: false
       - key: REDDIT_PASSWORD
         sync: false
+      
+      # Database connection (Railway PostgreSQL)
+      - key: DATABASE_URL
+        sync: false
+      
+      # Server configuration
       - key: PORT
         value: 10000
