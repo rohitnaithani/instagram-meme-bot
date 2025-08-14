@@ -1,9 +1,4 @@
 
-
-
-webdriver-manager==4.0.1
-psycopg2-binary==2.9.7
-
 # Core dependencies
 praw==7.7.1
 requests==2.31.0
