@@ -270,78 +270,137 @@ def setup_driver():
     logger.error("❌ No working ChromeDriver found!")
     return None
 
+
 def instagram_login(driver, username, password):
-    """Simplified Instagram login"""
-    logger.info(f"🔑 Logging into Instagram as {username}")
-    
+    """Stealth Instagram login that bypasses bot detection"""
+    logger.info(f"🥷 Stealth login for: {username}")
+
     try:
+        # Navigate to login
         driver.get("https://www.instagram.com/accounts/login/")
-        human_delay(5, 8)
-        
-        # Accept cookies if present
+        time.sleep(random.uniform(10, 18))
+
+        # Handle cookies
         try:
-            cookie_btn = WebDriverWait(driver, 3).until(
+            cookie_btn = WebDriverWait(driver, 5).until(
                 EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Accept')]"))
             )
-            cookie_btn.click()
-            human_delay(2, 3)
+            ActionChains(driver).move_to_element(cookie_btn).pause(0.5).click().perform()
+            time.sleep(random.uniform(2, 4))
         except:
             pass
-        
-        # Enter username
-        username_field = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "input[name='username']"))
+
+        # Wait for form
+        username_field = WebDriverWait(driver, 20).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, "input[name='username']"))
         )
+
+        # Human-like interaction
+        ActionChains(driver).move_to_element(username_field).pause(0.5).click().perform()
+        time.sleep(random.uniform(1, 2))
+
         username_field.clear()
-        human_delay(1, 2)
-        
+        time.sleep(random.uniform(1, 2))
+
+        # Human-like typing
         for char in username:
             username_field.send_keys(char)
-            time.sleep(random.uniform(0.1, 0.3))
-        
-        # Enter password
+            time.sleep(random.uniform(0.15, 0.45))
+
+        # Tab to password
+        time.sleep(random.uniform(2, 4))
+        username_field.send_keys(Keys.TAB)
+        time.sleep(random.uniform(1, 2))
+
         password_field = driver.find_element(By.CSS_SELECTOR, "input[name='password']")
         password_field.clear()
-        human_delay(1, 2)
-        
+        time.sleep(random.uniform(1, 2))
+
+        # Type password
         for char in password:
             password_field.send_keys(char)
-            time.sleep(random.uniform(0.1, 0.3))
-        
-        human_delay(2, 4)
-        
+            time.sleep(random.uniform(0.15, 0.4))
+
+        # Human thinking pause
+        time.sleep(random.uniform(5, 10))
+
         # Submit
-        login_btn = driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
-        driver.execute_script("arguments[0].click();", login_btn)
-        
-        # Wait for login
-        human_delay(10, 15)
-        
-        # Check for success
-        try:
-            WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.XPATH, "//svg[@aria-label='Home']"))
-            )
-            logger.info("✅ Login successful")
-            
-            # Dismiss any popups
+        password_field.send_keys(Keys.RETURN)
+        time.sleep(random.uniform(15, 25))
+
+        # Check success
+        if "/accounts/login" not in driver.current_url:
             try:
-                not_now = WebDriverWait(driver, 3).until(
-                    EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Not Now')]"))
+                WebDriverWait(driver, 10).until(
+                    EC.any_of(
+                        EC.presence_of_element_located((By.XPATH, "//svg[@aria-label='Home']")),
+                        EC.presence_of_element_located((By.XPATH, "//span[text()='Create']"))
+                    )
                 )
-                not_now.click()
+                logger.info("🎉 Stealth login successful!")
+
+                # Handle popups
+                for _ in range(3):
+                    try:
+                        popup = WebDriverWait(driver, 3).until(
+                            EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Not Now')]"))
+                        )
+                        ActionChains(driver).move_to_element(popup).pause(0.5).click().perform()
+                        time.sleep(random.uniform(2, 4))
+                    except:
+                        break
+
+                return True
             except:
-                pass
-                
-            return True
-        except:
-            logger.error("❌ Login failed")
+                logger.error("❌ Redirected but no logged-in elements")
+                return False
+        else:
+            logger.error("❌ Login failed - still on login page")
             return False
-            
+
     except Exception as e:
-        logger.error(f"❌ Login error: {e}")
+        logger.error(f"❌ Stealth login error: {e}")
         return False
 
+# Also update your setup_driver function:
+def setup_driver():
+    """Enhanced driver setup for production"""
+    logger.info("🔧 Setting up production driver...")
+
+    chrome_options = Options()
+    chrome_options.add_argument("--headless=new")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--window-size=1366,768")
+
+    # Add all stealth options from create_stealth_driver function above
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    chrome_options.add_argument("--disable-extensions")
+    chrome_options.add_argument("--no-first-run")
+    chrome_options.add_argument("--disable-default-apps")
+    chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    chrome_options.add_experimental_option('useAutomationExtension', False)
+
+    try:
+        service = Service('/usr/local/bin/chromedriver')
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+
+        # Execute the same stealth script from above
+        driver.execute_script("""
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+            window.chrome = {runtime: {}};
+            delete navigator.__proto__.webdriver;
+        """)
+
+        return driver
+    except Exception as e:
+        logger.error(f"❌ Production driver setup failed: {e}")
+        return None
+        
 def upload_post(driver, file_path, caption):
     """Simplified Instagram upload"""
     logger.info(f"📤 Uploading: {os.path.basename(file_path)}")
