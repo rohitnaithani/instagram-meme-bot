@@ -1,8 +1,9 @@
 import os
 import praw
 import requests
-import json
-from urllib.parse import urlparse
+import psycopg2
+from psycopg2.extras import RealDictCursor
+import tempfile
 import time
 import random
 import logging
@@ -12,10 +13,7 @@ from datetime import datetime
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('meme_fetcher.log'),
-        logging.StreamHandler()
-    ]
+    handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
 
@@ -26,105 +24,165 @@ USERNAME = os.getenv("REDDIT_USERNAME")
 PASSWORD = os.getenv("REDDIT_PASSWORD")
 USER_AGENT = f"meme-fetcher by u/{USERNAME}"
 
+# Railway Database Connection
+DATABASE_URL = os.getenv("DATABASE_URL")
+
 SUBREDDIT = "dankmemes"
 IMAGES_TO_FETCH = 20
-VIDEOS_TO_FETCH = 20
-SAVE_FOLDER = "memes"
-HISTORY_FILE = "downloaded.json"
+VIDEOS_TO_FETCH = 5  # Reduced for free tier
 
-# ENHANCED DEBUG INFO - Add this right after config
-print("="*50)
-print("🔍 ENHANCED DEBUG INFORMATION")
-print("="*50)
-print(f"Current working directory: {os.getcwd()}")
-print(f"Files in current directory: {os.listdir('.')}")
-print(f"SAVE_FOLDER path: {os.path.abspath(SAVE_FOLDER)}")
-print(f"Memes directory exists: {os.path.exists('memes')}")
-print(f"Memes/images directory exists: {os.path.exists('memes/images')}")
-print(f"Memes/videos directory exists: {os.path.exists('memes/videos')}")
-
-# Create folders with enhanced logging
-try:
-    print(f"Creating directory: {SAVE_FOLDER}/images")
-    os.makedirs(f"{SAVE_FOLDER}/images", exist_ok=True)
-    print(f"✅ Created: {os.path.abspath(SAVE_FOLDER)}/images")
+class MemeDatabase:
+    def __init__(self, database_url):
+        self.database_url = database_url
+        self.init_database()
     
-    print(f"Creating directory: {SAVE_FOLDER}/videos")
-    os.makedirs(f"{SAVE_FOLDER}/videos", exist_ok=True)
-    print(f"✅ Created: {os.path.abspath(SAVE_FOLDER)}/videos")
+    def get_connection(self):
+        return psycopg2.connect(self.database_url)
     
-    # Test write permissions
-    test_file = os.path.join(SAVE_FOLDER, "test_write.txt")
-    with open(test_file, 'w') as f:
-        f.write("test write permissions")
-    print(f"✅ Write test successful: {test_file}")
-    os.remove(test_file)
-    print(f"✅ File cleanup successful")
+    def init_database(self):
+        """Initialize database tables"""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS memes (
+                            id SERIAL PRIMARY KEY,
+                            post_id VARCHAR(50) UNIQUE,
+                            title TEXT,
+                            url TEXT,
+                            file_type VARCHAR(10),
+                            file_size INTEGER DEFAULT 0,
+                            subreddit VARCHAR(50),
+                            score INTEGER DEFAULT 0,
+                            downloaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            posted BOOLEAN DEFAULT FALSE,
+                            post_date TIMESTAMP NULL,
+                            failed_attempts INTEGER DEFAULT 0
+                        );
+                        
+                        CREATE TABLE IF NOT EXISTS fetch_history (
+                            id SERIAL PRIMARY KEY,
+                            fetch_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            images_fetched INTEGER,
+                            videos_fetched INTEGER,
+                            total_processed INTEGER,
+                            errors TEXT
+                        );
+                        
+                        CREATE INDEX IF NOT EXISTS idx_memes_posted ON memes(posted);
+                        CREATE INDEX IF NOT EXISTS idx_memes_type ON memes(file_type);
+                    """)
+            logger.info("✅ Database initialized successfully")
+        except Exception as e:
+            logger.error(f"❌ Database initialization failed: {e}")
+            raise
     
-except Exception as e:
-    print(f"❌ Directory/write error: {e}")
-
-print("="*50)
-
-def diagnose_environment():
-    """Diagnose environment setup and potential issues"""
-    logger.info("🔍 Running diagnostic checks...")
-    
-    # Check environment variables
-    env_vars = {
-        "REDDIT_CLIENT_ID": CLIENT_ID,
-        "REDDIT_CLIENT_SECRET": CLIENT_SECRET,
-        "REDDIT_USERNAME": USERNAME,
-        "REDDIT_PASSWORD": PASSWORD
-    }
-    
-    missing_vars = []
-    for var, value in env_vars.items():
-        if not value:
-            missing_vars.append(var)
-            logger.error(f"❌ Missing environment variable: {var}")
-        else:
-            logger.info(f"✅ {var}: Set (length: {len(value)})")
-    
-    if missing_vars:
-        logger.error(f"❌ Missing required environment variables: {', '.join(missing_vars)}")
-        return False
-    
-    # Check folder permissions with enhanced logging
-    try:
-        test_file = os.path.join(SAVE_FOLDER, "test.txt")
-        logger.info(f"Testing write to: {os.path.abspath(test_file)}")
-        with open(test_file, 'w') as f:
-            f.write("test")
-        
-        # Check if file was actually created
-        if os.path.exists(test_file):
-            logger.info(f"✅ Test file created successfully: {test_file}")
-            file_size = os.path.getsize(test_file)
-            logger.info(f"✅ Test file size: {file_size} bytes")
-            os.remove(test_file)
-            logger.info("✅ Test file cleanup successful")
-        else:
-            logger.error("❌ Test file was not created!")
+    def add_meme(self, post_id, title, url, file_type, file_size=0, subreddit='', score=0):
+        """Add meme to database"""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO memes (post_id, title, url, file_type, file_size, subreddit, score)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (post_id) DO NOTHING
+                        RETURNING id;
+                    """, (post_id, title[:500], url, file_type, file_size, subreddit, score))
+                    
+                    result = cur.fetchone()
+                    if result:
+                        logger.info(f"✅ Added meme: {post_id} - {title[:30]}...")
+                        return True
+                    return False  # Already exists
+        except Exception as e:
+            logger.error(f"❌ Failed to add meme: {e}")
             return False
-            
-        logger.info("✅ Write permissions: OK")
-    except Exception as e:
-        logger.error(f"❌ Write permission error: {e}")
-        return False
     
-    # Test internet connectivity
-    try:
-        response = requests.get("https://www.reddit.com", timeout=10)
-        if response.status_code == 200:
-            logger.info("✅ Internet connectivity: OK")
-        else:
-            logger.warning(f"⚠️  Reddit accessibility: HTTP {response.status_code}")
-    except Exception as e:
-        logger.error(f"❌ Internet connectivity error: {e}")
-        return False
+    def get_next_meme(self, file_type=None):
+        """Get next unposted meme"""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    query = """
+                        SELECT * FROM memes 
+                        WHERE posted = FALSE AND failed_attempts < 3
+                    """
+                    params = []
+                    
+                    if file_type:
+                        query += " AND file_type = %s"
+                        params.append(file_type)
+                    
+                    query += " ORDER BY score DESC, downloaded_at ASC LIMIT 1"
+                    
+                    cur.execute(query, params)
+                    return cur.fetchone()
+        except Exception as e:
+            logger.error(f"❌ Failed to get next meme: {e}")
+            return None
     
-    return True
+    def mark_as_posted(self, post_id):
+        """Mark meme as posted"""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        UPDATE memes 
+                        SET posted = TRUE, post_date = CURRENT_TIMESTAMP
+                        WHERE post_id = %s
+                    """, (post_id,))
+            logger.info(f"✅ Marked as posted: {post_id}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Failed to mark as posted: {e}")
+            return False
+    
+    def mark_as_failed(self, post_id):
+        """Mark meme as failed (increment failure count)"""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        UPDATE memes 
+                        SET failed_attempts = failed_attempts + 1
+                        WHERE post_id = %s
+                    """, (post_id,))
+            logger.info(f"⚠️ Marked as failed: {post_id}")
+        except Exception as e:
+            logger.error(f"❌ Failed to update failure count: {e}")
+    
+    def get_stats(self):
+        """Get current statistics"""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute("""
+                        SELECT 
+                            COUNT(*) as total_memes,
+                            SUM(CASE WHEN file_type = 'image' THEN 1 ELSE 0 END) as total_images,
+                            SUM(CASE WHEN file_type = 'video' THEN 1 ELSE 0 END) as total_videos,
+                            SUM(CASE WHEN posted = FALSE AND failed_attempts < 3 THEN 1 ELSE 0 END) as available,
+                            SUM(CASE WHEN posted = TRUE THEN 1 ELSE 0 END) as posted,
+                            MAX(downloaded_at) as last_fetch
+                        FROM memes;
+                    """)
+                    return cur.fetchone()
+        except Exception as e:
+            logger.error(f"❌ Failed to get stats: {e}")
+            return {}
+    
+    def log_fetch_session(self, images_fetched, videos_fetched, total_processed, errors=""):
+        """Log fetch session results"""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO fetch_history 
+                        (images_fetched, videos_fetched, total_processed, errors)
+                        VALUES (%s, %s, %s, %s)
+                    """, (images_fetched, videos_fetched, total_processed, errors))
+        except Exception as e:
+            logger.error(f"❌ Failed to log fetch session: {e}")
 
 def test_reddit_connection():
     """Test Reddit API connection"""
@@ -137,135 +195,13 @@ def test_reddit_connection():
             user_agent=USER_AGENT
         )
         
-        # Test authentication by getting user info
         user = reddit.user.me()
         logger.info(f"✅ Reddit authentication successful: {user.name}")
-        
-        # Test subreddit access
-        subreddit = reddit.subreddit(SUBREDDIT)
-        logger.info(f"✅ Subreddit access: r/{subreddit.display_name}")
-        
-        # Test fetching a few posts
-        posts = list(subreddit.hot(limit=5))
-        logger.info(f"✅ Successfully fetched {len(posts)} test posts")
-        
         return reddit
         
     except Exception as e:
         logger.error(f"❌ Reddit connection failed: {e}")
         return None
-
-def load_history():
-    """Load previously downloaded post IDs"""
-    if os.path.exists(HISTORY_FILE):
-        try:
-            with open(HISTORY_FILE, 'r') as f:
-                history = json.load(f)
-                logger.info(f"📁 Loaded history: {len(history.get('downloaded_ids', []))} downloaded, {len(history.get('failed_urls', []))} failed")
-                return history
-        except Exception as e:
-            logger.error(f"❌ Error loading history: {e}")
-            return {"downloaded_ids": [], "failed_urls": []}
-    return {"downloaded_ids": [], "failed_urls": []}
-
-def save_history(history):
-    """Save downloaded post IDs to prevent duplicates"""
-    try:
-        with open(HISTORY_FILE, 'w') as f:
-            json.dump(history, f, indent=2)
-        logger.info(f"💾 History saved: {len(history['downloaded_ids'])} total downloads")
-    except Exception as e:
-        logger.error(f"❌ Error saving history: {e}")
-
-def get_valid_filename(title, post_id):
-    """Create valid filename from post title"""
-    valid_chars = "-_.() abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-    filename = ''.join(c for c in title if c in valid_chars)
-    filename = filename.replace(' ', '_')[:50]
-    return f"{post_id}_{filename}"
-
-def get_file_extension(url):
-    """Get appropriate file extension from URL"""
-    if url.endswith(('.jpg', '.jpeg')):
-        return '.jpg'
-    elif url.endswith('.png'):
-        return '.png'
-    elif url.endswith('.gif'):
-        return '.gif'
-    elif url.endswith('.mp4'):
-        return '.mp4'
-    else:
-        # Default based on content type
-        try:
-            response = requests.head(url, timeout=5)
-            content_type = response.headers.get('content-type', '')
-            if 'image' in content_type:
-                return '.jpg'
-            elif 'video' in content_type:
-                return '.mp4'
-        except:
-            pass
-        return '.jpg'  # Default fallback
-
-def download_file(url, filepath, retries=3):
-    """Download file with retry mechanism and better error handling"""
-    logger.info(f"📥 Attempting to download to: {os.path.abspath(filepath)}")
-    
-    for attempt in range(retries):
-        try:
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            }
-            
-            logger.info(f"📥 Downloading: {url}")
-            response = requests.get(url, headers=headers, stream=True, timeout=30)
-            response.raise_for_status()
-            
-            # Check content type
-            content_type = response.headers.get('content-type', '')
-            if not any(x in content_type for x in ['image', 'video', 'octet-stream']):
-                logger.warning(f"⚠️  Unexpected content type: {content_type}")
-            
-            # Create directory if it doesn't exist
-            os.makedirs(os.path.dirname(filepath), exist_ok=True)
-            
-            with open(filepath, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-            
-            # Verify file was created and has content
-            if not os.path.exists(filepath):
-                logger.error(f"❌ File was not created: {filepath}")
-                return False
-                
-            file_size = os.path.getsize(filepath)
-            if file_size < 1024:  # Less than 1KB might be an error page
-                logger.warning(f"⚠️  Small file size: {file_size} bytes")
-                os.remove(filepath)
-                return False
-            
-            logger.info(f"✅ Downloaded: {os.path.basename(filepath)} ({file_size} bytes)")
-            logger.info(f"✅ File location: {os.path.abspath(filepath)}")
-            
-            # Verify file still exists after a short delay (test persistence)
-            time.sleep(0.5)
-            if os.path.exists(filepath):
-                logger.info(f"✅ File persistence confirmed: {filepath}")
-            else:
-                logger.error(f"❌ File disappeared after creation: {filepath}")
-                return False
-            
-            return True
-            
-        except Exception as e:
-            logger.warning(f"❌ Attempt {attempt + 1} failed for {url}: {e}")
-            if os.path.exists(filepath):
-                os.remove(filepath)
-            if attempt < retries - 1:
-                time.sleep(random.uniform(2, 5))  # Random delay
-            
-    return False
 
 def is_valid_image_url(url):
     """Check if URL points to a valid image"""
@@ -277,61 +213,98 @@ def is_valid_image_url(url):
 
 def is_valid_video_url(url):
     """Check if URL points to a valid video"""
-    return ("v.redd.it" in url or url.endswith('.mp4') or 
-            "gfycat.com" in url or "redgifs.com" in url)
+    return ("v.redd.it" in url or url.endswith('.mp4'))
+
+def get_file_size(url):
+    """Get file size without downloading"""
+    try:
+        response = requests.head(url, timeout=10)
+        return int(response.headers.get('content-length', 0))
+    except:
+        return 0
+
+def download_meme_temporarily(url):
+    """Download meme to temporary file"""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        response = requests.get(url, headers=headers, stream=True, timeout=30)
+        response.raise_for_status()
+        
+        # Create temporary file
+        suffix = '.jpg'
+        if url.endswith('.png'):
+            suffix = '.png'
+        elif url.endswith('.gif'):
+            suffix = '.gif'
+        elif url.endswith('.mp4'):
+            suffix = '.mp4'
+        
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+        
+        for chunk in response.iter_content(chunk_size=8192):
+            if chunk:
+                temp_file.write(chunk)
+        
+        temp_file.close()
+        
+        # Verify file
+        if os.path.getsize(temp_file.name) < 1024:
+            os.unlink(temp_file.name)
+            return None
+            
+        logger.info(f"✅ Downloaded temporarily: {os.path.basename(temp_file.name)}")
+        return temp_file.name
+        
+    except Exception as e:
+        logger.error(f"❌ Download failed: {e}")
+        return None
+
+def cleanup_temp_file(filepath):
+    """Clean up temporary file"""
+    try:
+        if filepath and os.path.exists(filepath):
+            os.unlink(filepath)
+            logger.info(f"🧹 Cleaned up temp file: {os.path.basename(filepath)}")
+    except Exception as e:
+        logger.error(f"❌ Cleanup failed: {e}")
 
 def fetch_memes():
-    """Main function to fetch memes from Reddit"""
+    """Fetch memes and store in database"""
     start_time = time.time()
-    logger.info(f"🚀 Starting enhanced meme fetch from r/{SUBREDDIT}...")
+    logger.info(f"🚀 Starting database meme fetch from r/{SUBREDDIT}...")
     
-    # ENHANCED DEBUG - Check directory state before starting
-    logger.info("📂 PRE-FETCH DIRECTORY STATE:")
-    logger.info(f"   Working directory: {os.getcwd()}")
-    logger.info(f"   Memes dir exists: {os.path.exists('memes')}")
-    logger.info(f"   Images dir exists: {os.path.exists('memes/images')}")
-    logger.info(f"   Videos dir exists: {os.path.exists('memes/videos')}")
+    # Check environment
+    if not DATABASE_URL:
+        logger.error("❌ DATABASE_URL not found!")
+        return {"error": "Missing DATABASE_URL"}
     
-    # Run diagnostics
-    if not diagnose_environment():
-        logger.error("❌ Environment diagnostic failed. Exiting.")
-        return
+    # Initialize database
+    try:
+        db = MemeDatabase(DATABASE_URL)
+    except Exception as e:
+        logger.error(f"❌ Database connection failed: {e}")
+        return {"error": str(e)}
     
     # Test Reddit connection
     reddit = test_reddit_connection()
     if not reddit:
-        logger.error("❌ Reddit connection failed. Exiting.")
-        return
-    
-    # Load history
-    history = load_history()
-    downloaded_ids = set(history["downloaded_ids"])
-    failed_urls = set(history["failed_urls"])
+        return {"error": "Reddit connection failed"}
     
     image_count = 0
     video_count = 0
     processed = 0
-    skipped = 0
+    errors = []
     
-    # Fetch posts from hot section
     try:
         subreddit = reddit.subreddit(SUBREDDIT)
-        logger.info(f"📋 Fetching posts from r/{SUBREDDIT}...")
+        logger.info(f"📋 Fetching from r/{SUBREDDIT}...")
         
-        for submission in subreddit.hot(limit=500):  # Increased limit
+        for submission in subreddit.hot(limit=200):
             processed += 1
             
-            # Skip if already downloaded
-            if submission.id in downloaded_ids:
-                skipped += 1
-                continue
-                
-            # Skip if previously failed
-            if submission.url in failed_urls:
-                skipped += 1
-                continue
-            
-            # Skip deleted or removed posts
             if submission.removed_by_category or not submission.title:
                 continue
             
@@ -339,123 +312,119 @@ def fetch_memes():
             
             # Process images
             if is_valid_image_url(submission.url) and image_count < IMAGES_TO_FETCH:
-                filename = get_valid_filename(submission.title, submission.id)
-                extension = get_file_extension(submission.url)
-                filepath = os.path.join(SAVE_FOLDER, "images", f"{filename}{extension}")
-                
-                if download_file(submission.url, filepath):
+                file_size = get_file_size(submission.url)
+                if db.add_meme(submission.id, submission.title, submission.url, 
+                              'image', file_size, SUBREDDIT, submission.score):
                     image_count += 1
-                    downloaded_ids.add(submission.id)
-                    logger.info(f"📸 Image {image_count}/{IMAGES_TO_FETCH} downloaded")
-                    
-                    # ENHANCED DEBUG - Check if file persists
-                    if os.path.exists(filepath):
-                        size = os.path.getsize(filepath)
-                        logger.info(f"✅ File confirmed: {filepath} ({size} bytes)")
-                    else:
-                        logger.error(f"❌ File vanished: {filepath}")
-                else:
-                    failed_urls.add(submission.url)
+                    logger.info(f"📸 Image {image_count}/{IMAGES_TO_FETCH} added")
             
-            # Process videos
+            # Process videos  
             elif is_valid_video_url(submission.url) and video_count < VIDEOS_TO_FETCH:
-                video_url = None
+                video_url = submission.url
                 
                 # Handle Reddit videos
                 if hasattr(submission, 'media') and submission.media and "reddit_video" in submission.media:
                     video_url = submission.media["reddit_video"]["fallback_url"]
-                elif submission.url.endswith('.mp4'):
-                    video_url = submission.url
-                elif "v.redd.it" in submission.url:
-                    # Try to construct video URL
-                    video_url = submission.url + "/DASH_720.mp4"
                 
-                if video_url:
-                    filename = get_valid_filename(submission.title, submission.id)
-                    filepath = os.path.join(SAVE_FOLDER, "videos", f"{filename}.mp4")
-                    
-                    if download_file(video_url, filepath):
-                        video_count += 1
-                        downloaded_ids.add(submission.id)
-                        logger.info(f"🎥 Video {video_count}/{VIDEOS_TO_FETCH} downloaded")
-                        
-                        # ENHANCED DEBUG - Check if file persists
-                        if os.path.exists(filepath):
-                            size = os.path.getsize(filepath)
-                            logger.info(f"✅ File confirmed: {filepath} ({size} bytes)")
-                        else:
-                            logger.error(f"❌ File vanished: {filepath}")
-                    else:
-                        failed_urls.add(submission.url)
+                file_size = get_file_size(video_url)
+                if db.add_meme(submission.id, submission.title, video_url,
+                              'video', file_size, SUBREDDIT, submission.score):
+                    video_count += 1
+                    logger.info(f"🎥 Video {video_count}/{VIDEOS_TO_FETCH} added")
             
-            # Break if we have enough content
+            # Break if targets reached
             if image_count >= IMAGES_TO_FETCH and video_count >= VIDEOS_TO_FETCH:
-                logger.info("✅ Target numbers reached!")
                 break
                 
-            # Add respectful delays
+            # Respectful delay
             if processed % 10 == 0:
-                logger.info(f"📊 Progress: {processed} processed, {image_count} images, {video_count} videos, {skipped} skipped")
-                time.sleep(random.uniform(1, 3))
+                time.sleep(random.uniform(1, 2))
     
     except Exception as e:
-        logger.error(f"❌ Error fetching posts: {e}")
+        error_msg = f"Fetch error: {str(e)}"
+        errors.append(error_msg)
+        logger.error(f"❌ {error_msg}")
     
-    # ENHANCED DEBUG - Final directory check
-    logger.info("📂 POST-FETCH DIRECTORY STATE:")
-    try:
-        images_dir = os.path.join(SAVE_FOLDER, "images")
-        videos_dir = os.path.join(SAVE_FOLDER, "videos")
-        
-        if os.path.exists(images_dir):
-            image_files = os.listdir(images_dir)
-            logger.info(f"   Images directory: {len(image_files)} files")
-            for f in image_files[:5]:  # Show first 5
-                filepath = os.path.join(images_dir, f)
-                size = os.path.getsize(filepath)
-                logger.info(f"     - {f} ({size} bytes)")
-        else:
-            logger.error(f"   Images directory not found: {images_dir}")
-            
-        if os.path.exists(videos_dir):
-            video_files = os.listdir(videos_dir)
-            logger.info(f"   Videos directory: {len(video_files)} files")
-            for f in video_files[:5]:  # Show first 5
-                filepath = os.path.join(videos_dir, f)
-                size = os.path.getsize(filepath)
-                logger.info(f"     - {f} ({size} bytes)")
-        else:
-            logger.error(f"   Videos directory not found: {videos_dir}")
-            
-    except Exception as e:
-        logger.error(f"❌ Error checking final directory state: {e}")
+    # Log session
+    db.log_fetch_session(image_count, video_count, processed, "; ".join(errors))
     
-    # Save updated history
-    history["downloaded_ids"] = list(downloaded_ids)
-    history["failed_urls"] = list(failed_urls)
-    history["last_fetch"] = datetime.now().isoformat()
-    save_history(history)
-    
-    # Final statistics
+    # Final stats
     elapsed_time = time.time() - start_time
-    logger.info(f"\n🎯 Fetch Complete!")
-    logger.info(f"📸 Images downloaded: {image_count}/{IMAGES_TO_FETCH}")
-    logger.info(f"🎥 Videos downloaded: {video_count}/{VIDEOS_TO_FETCH}")
-    logger.info(f"📊 Posts processed: {processed}")
-    logger.info(f"⏭️  Posts skipped: {skipped}")
-    logger.info(f"💾 Total items in history: {len(downloaded_ids)}")
-    logger.info(f"⏱️  Time elapsed: {elapsed_time:.2f} seconds")
+    stats = db.get_stats()
     
-    # Check if we got any content
-    if image_count == 0 and video_count == 0:
-        logger.warning("⚠️  No content downloaded! Check subreddit availability and filters.")
+    logger.info(f"\n🎯 Fetch Complete!")
+    logger.info(f"📸 Images added: {image_count}")
+    logger.info(f"🎥 Videos added: {video_count}")
+    logger.info(f"📊 Total available: {stats.get('available', 0)}")
+    logger.info(f"⏱️ Time: {elapsed_time:.2f}s")
     
     return {
-        "images": image_count,
-        "videos": video_count,
-        "processed": processed,
-        "time_elapsed": elapsed_time
+        "images_fetched": image_count,
+        "videos_fetched": video_count,
+        "total_processed": processed,
+        "time_elapsed": elapsed_time,
+        "stats": dict(stats) if stats else {}
     }
 
+def get_meme_for_posting(prefer_images=True):
+    """Get next meme for posting to Instagram"""
+    if not DATABASE_URL:
+        logger.error("❌ DATABASE_URL not found!")
+        return None, None
+    
+    db = MemeDatabase(DATABASE_URL)
+    
+    # Try to get preferred type first
+    file_type = 'image' if prefer_images else 'video'
+    meme = db.get_next_meme(file_type)
+    
+    # If none available, try the other type
+    if not meme:
+        file_type = 'video' if prefer_images else 'image'
+        meme = db.get_next_meme(file_type)
+    
+    if not meme:
+        logger.info("📭 No memes available for posting")
+        return None, None
+    
+    logger.info(f"📋 Selected meme: {meme['title'][:50]}...")
+    
+    # Download temporarily
+    temp_file = download_meme_temporarily(meme['url'])
+    
+    if temp_file:
+        return meme, temp_file
+    else:
+        # Mark as failed and try next
+        db.mark_as_failed(meme['post_id'])
+        return None, None
+
+def mark_meme_as_posted(post_id):
+    """Mark meme as successfully posted"""
+    if not DATABASE_URL:
+        return False
+    
+    db = MemeDatabase(DATABASE_URL)
+    return db.mark_as_posted(post_id)
+
+def get_meme_stats():
+    """Get current meme statistics"""
+    if not DATABASE_URL:
+        return {}
+    
+    try:
+        db = MemeDatabase(DATABASE_URL)
+        return dict(db.get_stats())
+    except:
+        return {}
+
+# Test function
 if __name__ == "__main__":
-    fetch_memes()
+    print("🧪 Testing database connection...")
+    result = fetch_memes()
+    print(f"Result: {result}")
+    
+    print("\n📊 Current stats:")
+    stats = get_meme_stats()
+    for key, value in stats.items():
+        print(f"  {key}: {value}")
