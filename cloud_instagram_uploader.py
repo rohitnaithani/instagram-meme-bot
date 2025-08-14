@@ -10,6 +10,8 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
 import logging
 from datetime import datetime
 import requests
@@ -130,7 +132,7 @@ def get_memes_from_database(posted_ids=None):
         meme_list = []
         for meme in memes:
             meme_dict = dict(meme)
-            logger.info(f"  - {meme_dict['title'][:50]}... (Score: {meme_dict.get('score', 'N/A')})")
+            logger.info(f"  - {meme_dict['title'][:50]}... (ID: {meme_dict['id']})")
             meme_list.append(meme_dict)
         
         return meme_list
@@ -194,6 +196,8 @@ def download_meme_file(url, meme_id):
     except Exception as e:
         logger.error(f"❌ Error downloading meme: {e}")
         return None
+
+def format_caption(meme_data):
     """Format caption from meme data"""
     title = meme_data.get('title', 'Funny meme')
     
@@ -215,73 +219,120 @@ def human_delay(min_seconds=2, max_seconds=5):
     time.sleep(delay)
 
 def setup_driver():
-    """Setup Chrome driver optimized for cloud deployment"""
+    """Setup Chrome driver with fixed version compatibility for Render"""
+    logger.info("🔧 Setting up Chrome driver for cloud deployment...")
+    
     chrome_options = Options()
     
-    # Essential cloud options
+    # Essential cloud options for Render
     chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--remote-debugging-port=9222")
     chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.add_argument("--start-maximized")
     
-    # Memory optimization
+    # Memory and performance optimization
     chrome_options.add_argument("--memory-pressure-off")
-    chrome_options.add_argument("--max_old_space_size=4096")
     chrome_options.add_argument("--disable-background-timer-throttling")
     chrome_options.add_argument("--disable-renderer-backgrounding")
-    
-    # Anti-detection
-    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    chrome_options.add_argument("--disable-backgrounding-occluded-windows")
+    chrome_options.add_argument("--disable-client-side-phishing-detection")
+    chrome_options.add_argument("--disable-crash-reporter")
     chrome_options.add_argument("--disable-extensions")
-    chrome_options.add_argument("--disable-plugins")
+    chrome_options.add_argument("--disable-features=TranslateUI")
+    chrome_options.add_argument("--disable-ipc-flooding-protection")
+    
+    # Anti-detection measures
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     chrome_options.add_experimental_option('useAutomationExtension', False)
     
-    # Realistic browser fingerprint
+    # Set a realistic user agent
     chrome_options.add_argument("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     
+    # Disable notifications and location
+    prefs = {
+        "profile.default_content_setting_values": {
+            "notifications": 2,
+            "geolocation": 2,
+        },
+        "profile.default_content_settings.popups": 0,
+        "profile.managed_default_content_settings.images": 2
+    }
+    chrome_options.add_experimental_option("prefs", prefs)
+    
     try:
-        driver = webdriver.Chrome(options=chrome_options)
+        # Use webdriver-manager to automatically handle ChromeDriver versions
+        logger.info("🚀 Setting up ChromeDriver with webdriver-manager...")
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=chrome_options)
         
         # Execute anti-detection scripts
         driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         driver.execute_script("Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']})")
+        driver.execute_script("Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]})")
         
         driver.set_page_load_timeout(60)
-        logger.info("✅ Chrome driver initialized")
+        logger.info("✅ Chrome driver initialized successfully with webdriver-manager")
         return driver
         
     except Exception as e:
-        logger.error(f"❌ Failed to start Chrome driver: {e}")
+        logger.error(f"❌ Failed to start Chrome driver with webdriver-manager: {e}")
+        
+        # Fallback: Try without webdriver-manager
+        try:
+            logger.info("🔄 Trying fallback Chrome setup without webdriver-manager...")
+            driver = webdriver.Chrome(options=chrome_options)
+            driver.set_page_load_timeout(60)
+            logger.info("✅ Chrome driver initialized with fallback method")
+            return driver
+        except Exception as e2:
+            logger.error(f"❌ Fallback Chrome setup also failed: {e2}")
+            logger.error("💡 Make sure Chrome is installed on the system")
+            
         return None
 
 def instagram_login(driver, username, password):
-    """Enhanced Instagram login"""
+    """Enhanced Instagram login with better error handling"""
     logger.info("🔑 Starting Instagram login...")
     
     try:
         # Go to login page
+        logger.info("📱 Navigating to Instagram login page...")
         driver.get("https://www.instagram.com/accounts/login/")
         human_delay(5, 8)
         
         # Handle cookie banners
         try:
-            accept_btn = WebDriverWait(driver, 5).until(
-                EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Accept') or contains(text(), 'Allow')]"))
-            )
-            accept_btn.click()
-            human_delay(1, 2)
+            accept_selectors = [
+                "//button[contains(text(), 'Accept')]",
+                "//button[contains(text(), 'Allow')]",
+                "//button[contains(text(), 'Accept All')]"
+            ]
+            
+            for selector in accept_selectors:
+                try:
+                    accept_btn = WebDriverWait(driver, 3).until(
+                        EC.element_to_be_clickable((By.XPATH, selector))
+                    )
+                    accept_btn.click()
+                    logger.info("✅ Cookie banner accepted")
+                    human_delay(1, 2)
+                    break
+                except:
+                    continue
         except:
-            pass
+            logger.info("ℹ️  No cookie banner found")
         
         # Wait for login form
+        logger.info("⏳ Waiting for login form...")
         username_field = WebDriverWait(driver, 20).until(
             EC.presence_of_element_located((By.NAME, "username"))
         )
         
         # Type username slowly
+        logger.info(f"👤 Entering username: {username}")
         username_field.clear()
         for char in username:
             username_field.send_keys(char)
@@ -293,47 +344,60 @@ def instagram_login(driver, username, password):
         # Type password
         password_field = driver.find_element(By.NAME, "password")
         password_field.clear()
-        for char in password:
+        logger.info("🔒 Entering password...")
+        for i, char in enumerate(password):
             password_field.send_keys(char)
             time.sleep(random.uniform(0.1, 0.3))
+            # Don't log the actual password
+            if i == 0:
+                logger.info("🔒 Password entry started...")
         
         logger.info("✅ Password entered")
         human_delay(3, 5)
         
         # Submit login
+        logger.info("🚀 Submitting login...")
         try:
             login_button = driver.find_element(By.XPATH, "//button[@type='submit']")
             login_button.click()
         except:
             password_field.send_keys(Keys.RETURN)
         
-        logger.info("🔄 Login submitted")
+        logger.info("🔄 Login submitted, waiting for response...")
         human_delay(8, 12)
         
-        # Check for success
+        # Check for success indicators
         try:
-            WebDriverWait(driver, 15).until(
-                EC.any_of(
-                    EC.presence_of_element_located((By.XPATH, "//a[@href='/direct/inbox/']")),
-                    EC.presence_of_element_located((By.XPATH, "//svg[@aria-label='Home']")),
-                    EC.presence_of_element_located((By.XPATH, "//*[@aria-label='New post']"))
-                )
-            )
-            logger.info("✅ Login successful")
-            
-            # Handle post-login popups
-            popups = [
-                "//button[contains(text(), 'Not now') or contains(text(), 'Not Now')]",
-                "//button[text()='Not Now']",
-                "//button[contains(text(), 'Skip')]"
+            success_indicators = [
+                "//a[@href='/direct/inbox/']",
+                "//svg[@aria-label='Home']", 
+                "//*[@aria-label='New post']",
+                "//a[contains(@href, '/direct/')]",
+                "//span[text()='Create']"
             ]
             
-            for popup_xpath in popups:
+            WebDriverWait(driver, 15).until(
+                EC.any_of(*[EC.presence_of_element_located((By.XPATH, indicator)) for indicator in success_indicators])
+            )
+            logger.info("✅ Login successful - Instagram home page loaded")
+            
+            # Handle post-login popups
+            logger.info("🔄 Handling post-login popups...")
+            popup_selectors = [
+                "//button[contains(text(), 'Not now')]",
+                "//button[contains(text(), 'Not Now')]", 
+                "//button[text()='Not Now']",
+                "//button[contains(text(), 'Skip')]",
+                "//button[contains(text(), 'Maybe Later')]"
+            ]
+            
+            for popup_xpath in popup_selectors:
                 try:
                     popup = WebDriverWait(driver, 5).until(
                         EC.element_to_be_clickable((By.XPATH, popup_xpath))
                     )
                     popup.click()
+                    logger.info("✅ Popup dismissed")
                     human_delay(2, 3)
                 except:
                     continue
@@ -342,6 +406,15 @@ def instagram_login(driver, username, password):
             
         except:
             logger.error("❌ Login failed - no success indicators found")
+            
+            # Check for specific error messages
+            try:
+                error_messages = driver.find_elements(By.XPATH, "//*[contains(text(), 'incorrect') or contains(text(), 'error') or contains(text(), 'wrong')]")
+                if error_messages:
+                    logger.error(f"❌ Login error detected: {error_messages[0].text}")
+            except:
+                pass
+            
             return False
             
     except Exception as e:
@@ -349,33 +422,38 @@ def instagram_login(driver, username, password):
         return False
 
 def upload_post(driver, file_path, caption):
-    """Upload a post to Instagram"""
+    """Upload a post to Instagram with enhanced error handling"""
     logger.info(f"📤 Starting upload: {os.path.basename(file_path)}")
     
     try:
         # Go to Instagram home
+        logger.info("🏠 Navigating to Instagram home...")
         driver.get("https://www.instagram.com/")
         human_delay(3, 5)
         
         # Click create post button
+        logger.info("➕ Looking for Create button...")
         create_selectors = [
             "//svg[@aria-label='New post']",
-            "//*[@aria-label='New post']",
+            "//*[@aria-label='New post']", 
             "//span[text()='Create']",
-            "//div[@role='menuitem']//span[contains(text(), 'Create')]"
+            "//div[@role='menuitem']//span[contains(text(), 'Create')]",
+            "//*[contains(@aria-label, 'Create')]"
         ]
         
         create_clicked = False
-        for selector in create_selectors:
+        for i, selector in enumerate(create_selectors):
             try:
+                logger.info(f"🔍 Trying create selector {i+1}/{len(create_selectors)}")
                 create_btn = WebDriverWait(driver, 10).until(
                     EC.element_to_be_clickable((By.XPATH, selector))
                 )
                 create_btn.click()
                 create_clicked = True
-                logger.info("✅ Create button clicked")
+                logger.info("✅ Create button clicked successfully")
                 break
-            except:
+            except Exception as e:
+                logger.info(f"❌ Create selector {i+1} failed: {str(e)[:100]}...")
                 continue
         
         if not create_clicked:
@@ -385,91 +463,146 @@ def upload_post(driver, file_path, caption):
         human_delay(2, 4)
         
         # Upload file
+        logger.info(f"📁 Uploading file: {file_path}")
         try:
-            file_input = WebDriverWait(driver, 10).until(
+            file_input = WebDriverWait(driver, 15).until(
                 EC.presence_of_element_located((By.XPATH, "//input[@type='file']"))
             )
             file_input.send_keys(os.path.abspath(file_path))
-            logger.info("✅ File selected")
-        except:
-            logger.error("❌ Could not find file input")
+            logger.info("✅ File selected successfully")
+        except Exception as e:
+            logger.error(f"❌ Could not find file input: {e}")
             return False
         
         human_delay(5, 8)
         
-        # Click Next button(s)
+        # Click Next button(s) - Instagram usually has 2-3 Next buttons
+        logger.info("⏭️ Proceeding through upload steps...")
         for step in range(3):
             try:
-                next_btn = WebDriverWait(driver, 10).until(
+                next_btn = WebDriverWait(driver, 15).until(
                     EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Next')]"))
                 )
                 next_btn.click()
                 logger.info(f"✅ Next button {step + 1} clicked")
                 human_delay(3, 5)
-            except:
-                logger.info(f"ℹ️  No more Next buttons (step {step + 1})")
+            except Exception as e:
+                logger.info(f"ℹ️  No more Next buttons at step {step + 1}: {str(e)[:50]}...")
                 break
         
         # Add caption
+        logger.info("📝 Adding caption...")
         try:
-            caption_area = WebDriverWait(driver, 10).until(
-                EC.element_to_be_clickable((By.XPATH, "//textarea[@aria-label='Write a caption...']"))
-            )
+            caption_selectors = [
+                "//textarea[@aria-label='Write a caption...']",
+                "//div[@contenteditable='true'][@aria-label='Write a caption...']",
+                "//textarea[contains(@placeholder, 'caption')]"
+            ]
             
-            # Type caption slowly
-            caption_area.clear()
-            for char in caption:
-                caption_area.send_keys(char)
-                time.sleep(random.uniform(0.05, 0.15))
+            caption_added = False
+            for selector in caption_selectors:
+                try:
+                    caption_area = WebDriverWait(driver, 10).until(
+                        EC.element_to_be_clickable((By.XPATH, selector))
+                    )
+                    
+                    # Type caption slowly to avoid detection
+                    caption_area.clear()
+                    logger.info(f"📝 Typing caption: {caption[:50]}...")
+                    for char in caption:
+                        caption_area.send_keys(char)
+                        time.sleep(random.uniform(0.05, 0.15))
+                    
+                    caption_added = True
+                    logger.info("✅ Caption added successfully")
+                    break
+                except:
+                    continue
             
-            logger.info("✅ Caption added")
-        except:
-            logger.warning("⚠️  Could not add caption")
+            if not caption_added:
+                logger.warning("⚠️  Could not add caption - continuing anyway")
+        except Exception as e:
+            logger.warning(f"⚠️  Caption error: {e}")
         
         human_delay(2, 4)
         
         # Share post
+        logger.info("🚀 Sharing post...")
         try:
-            share_btn = WebDriverWait(driver, 10).until(
-                EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Share')]"))
-            )
-            share_btn.click()
-            logger.info("✅ Share button clicked")
-        except:
-            logger.error("❌ Could not find Share button")
+            share_selectors = [
+                "//button[contains(text(), 'Share')]",
+                "//button[contains(@aria-label, 'Share')]",
+                "//*[text()='Share']"
+            ]
+            
+            shared = False
+            for selector in share_selectors:
+                try:
+                    share_btn = WebDriverWait(driver, 10).until(
+                        EC.element_to_be_clickable((By.XPATH, selector))
+                    )
+                    share_btn.click()
+                    shared = True
+                    logger.info("✅ Share button clicked")
+                    break
+                except:
+                    continue
+            
+            if not shared:
+                logger.error("❌ Could not find Share button")
+                return False
+        except Exception as e:
+            logger.error(f"❌ Share button error: {e}")
             return False
         
         # Wait for upload completion
+        logger.info("⏳ Waiting for upload completion...")
         human_delay(10, 15)
         
         # Check for success indicators
         try:
+            success_selectors = [
+                "//*[contains(text(), 'Your post has been shared')]",
+                "//*[contains(text(), 'Post shared')]",
+                "//svg[@aria-label='Home']",
+                "//*[@aria-label='Activity Feed']"
+            ]
+            
             WebDriverWait(driver, 20).until(
-                EC.any_of(
-                    EC.presence_of_element_located((By.XPATH, "//*[contains(text(), 'Your post has been shared')]")),
-                    EC.presence_of_element_located((By.XPATH, "//svg[@aria-label='Home']")),
-                    EC.url_contains("instagram.com")
-                )
+                EC.any_of(*[EC.presence_of_element_located((By.XPATH, selector)) for selector in success_selectors])
             )
             logger.info("🎉 Upload completed successfully!")
             return True
             
         except:
-            logger.warning("⚠️  Upload may have completed (timeout waiting for confirmation)")
+            logger.info("⚠️  Upload timeout - assuming success (Instagram sometimes doesn't show confirmation)")
             return True  # Assume success if no clear failure
             
     except Exception as e:
-        logger.error(f"❌ Upload failed: {e}")
+        logger.error(f"❌ Upload failed with error: {e}")
         return False
 
 def mark_meme_as_posted(meme_id):
     """Mark meme as posted in database"""
+    logger.info(f"📝 Marking meme {meme_id} as posted in database...")
+    
     conn = get_database_connection()
     if not conn:
         return False
     
     try:
         cursor = conn.cursor()
+        
+        # Check if uploaded_to_instagram column exists, if not create it
+        try:
+            cursor.execute("""
+                ALTER TABLE memes 
+                ADD COLUMN IF NOT EXISTS uploaded_to_instagram BOOLEAN DEFAULT FALSE,
+                ADD COLUMN IF NOT EXISTS uploaded_at TIMESTAMP NULL
+            """)
+            conn.commit()
+        except:
+            pass  # Column might already exist
         
         # Update meme as posted
         cursor.execute("""
@@ -494,18 +627,26 @@ def mark_meme_as_posted(meme_id):
 def main():
     """Main upload function"""
     logger.info("🚀 Starting PostgreSQL-based Instagram uploader...")
+    logger.info("=" * 60)
     
     # Check credentials
     if not all([INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD]):
         logger.error("❌ Missing Instagram credentials!")
-        logger.error("💡 Set INSTAGRAM_USERNAME and INSTAGRAM_PASSWORD in environment")
+        logger.error("💡 Set INSTAGRAM_USERNAME and INSTAGRAM_PASSWORD in Render environment")
         return False
     
-    logger.info(f"✅ Instagram credentials loaded for: {INSTAGRAM_USERNAME}")
+    logger.info(f"✅ Instagram credentials loaded for user: {INSTAGRAM_USERNAME}")
+    
+    # Test database connection
+    logger.info("🔌 Testing database connection...")
+    if not get_database_connection():
+        logger.error("❌ Database connection failed!")
+        return False
     
     # Load state
     state = load_state()
     posted_meme_ids = state.get("posted_meme_ids", [])
+    logger.info(f"📊 Previously posted memes: {len(posted_meme_ids)}")
     
     # Get memes from database
     memes = get_memes_from_database(posted_meme_ids)
@@ -519,11 +660,14 @@ def main():
     
     # Select first meme to post
     meme_to_post = memes[0]
-    logger.info(f"🎯 Selected meme: {meme_to_post['title'][:50]}...")
-    logger.info(f"   URL: {meme_to_post['url']}")
+    logger.info("🎯 Selected meme for upload:")
+    logger.info(f"   ID: {meme_to_post['id']}")
+    logger.info(f"   Title: {meme_to_post['title'][:80]}...")
     logger.info(f"   Reddit ID: {meme_to_post['reddit_id']}")
+    logger.info(f"   URL: {meme_to_post['url']}")
     
     # Download the meme file
+    logger.info("📥 Downloading meme file...")
     temp_file_path = download_meme_file(meme_to_post['url'], meme_to_post['id'])
     if not temp_file_path:
         logger.error("❌ Failed to download meme file")
@@ -532,6 +676,7 @@ def main():
     # Setup driver
     driver = setup_driver()
     if not driver:
+        logger.error("❌ Failed to setup Chrome driver")
         return False
     
     success = False
@@ -543,7 +688,7 @@ def main():
         
         # Format caption from meme data
         caption = format_caption(meme_to_post)
-        logger.info(f"📝 Caption: {caption[:100]}...")
+        logger.info(f"📝 Generated caption: {caption[:100]}...")
         
         # Upload post
         if upload_post(driver, temp_file_path, caption):
@@ -555,35 +700,43 @@ def main():
             state["last_upload_date"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             save_state(state)
             
-            logger.info(f"🎉 Successfully uploaded meme ID {meme_to_post['id']}")
+            logger.info("🎉 SUCCESS! Meme uploaded to Instagram")
+            logger.info(f"   Meme ID: {meme_to_post['id']}")
             logger.info(f"   Title: {meme_to_post['title']}")
+            logger.info(f"   Upload time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             success = True
         else:
             logger.error("❌ Upload failed")
     
     except Exception as e:
-        logger.error(f"❌ Unexpected error: {e}")
+        logger.error(f"❌ Unexpected error during upload: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
     
     finally:
         # Clean up temporary file
         if 'temp_file_path' in locals() and temp_file_path and os.path.exists(temp_file_path):
             try:
                 os.unlink(temp_file_path)
-                logger.info("🧹 Cleaned up temporary file")
-            except:
-                pass
+                logger.info("🧹 Temporary file cleaned up")
+            except Exception as e:
+                logger.warning(f"⚠️  Could not clean up temp file: {e}")
         
+        # Close driver
         try:
-            driver.quit()
-        except:
-            pass
+            if driver:
+                driver.quit()
+                logger.info("🔒 Chrome driver closed")
+        except Exception as e:
+            logger.warning(f"⚠️  Error closing driver: {e}")
     
+    logger.info("=" * 60)
     return success
 
 if __name__ == "__main__":
     success = main()
     if success:
-        print("✅ Instagram upload completed successfully")
+        print("✅ Instagram upload completed successfully!")
     else:
-        print("❌ Instagram upload failed")
+        print("❌ Instagram upload failed - check logs for details")
         exit(1)
