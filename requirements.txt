@@ -2,7 +2,9 @@
 praw==7.7.1
 requests==2.31.0
 selenium==4.15.0
-
+strawberry-graphql[fastapi]==0.214.0
+fastapi==0.104.1
+uvicorn==0.24.0
 # Web scraping and automation
 beautifulsoup4==4.12.2
 lxml==4.9.3
