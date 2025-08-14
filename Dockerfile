@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     unzip \
     xvfb \
+    jq \
     && rm -rf /var/lib/apt/lists/*
 
 # Add Google Chrome repository and install Chrome
@@ -24,16 +25,35 @@ RUN apt-get update && apt-get install -y \
     google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
 
-# Install ChromeDriver manually (more reliable than webdriver-manager)
+# Install ChromeDriver using the new Chrome for Testing API
 RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d'.' -f1-3) \
     && echo "Chrome version: $CHROME_VERSION" \
-    && CHROMEDRIVER_VERSION=$(curl -s "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_$CHROME_VERSION") \
-    && echo "ChromeDriver version: $CHROMEDRIVER_VERSION" \
-    && wget -O /tmp/chromedriver.zip "https://chromedriver.storage.googleapis.com/$CHROMEDRIVER_VERSION/chromedriver_linux64.zip" \
+    && CHROMEDRIVER_URL=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/known-good-versions-with-downloads.json" | \
+       jq -r ".versions[] | select(.version | startswith(\"$CHROME_VERSION\")) | .downloads.chromedriver[] | select(.platform==\"linux64\") | .url" | head -1) \
+    && echo "ChromeDriver URL: $CHROMEDRIVER_URL" \
+    && if [ -z "$CHROMEDRIVER_URL" ]; then \
+         echo "No matching ChromeDriver found, using latest stable"; \
+         LATEST_VERSION=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions.json" | jq -r '.channels.Stable.version'); \
+         CHROMEDRIVER_URL="https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/$LATEST_VERSION/linux64/chromedriver-linux64.zip"; \
+       fi \
+    && wget -O /tmp/chromedriver.zip "$CHROMEDRIVER_URL" \
     && unzip /tmp/chromedriver.zip -d /tmp/ \
-    && mv /tmp/chromedriver /usr/local/bin/chromedriver \
+    && if [ -f /tmp/chromedriver-linux64/chromedriver ]; then \
+         mv /tmp/chromedriver-linux64/chromedriver /usr/local/bin/chromedriver; \
+       else \
+         mv /tmp/chromedriver /usr/local/bin/chromedriver; \
+       fi \
     && chmod +x /usr/local/bin/chromedriver \
-    && rm /tmp/chromedriver.zip
+    && rm -rf /tmp/chromedriver* \
+    && echo "ChromeDriver installed successfully"
+
+# Alternative fallback method if the above fails
+RUN if [ ! -f /usr/local/bin/chromedriver ]; then \
+        echo "Fallback: Installing ChromeDriver via apt"; \
+        apt-get update && apt-get install -y chromium-driver && \
+        ln -sf /usr/bin/chromedriver /usr/local/bin/chromedriver && \
+        rm -rf /var/lib/apt/lists/*; \
+    fi
 
 # Verify installations
 RUN google-chrome --version
